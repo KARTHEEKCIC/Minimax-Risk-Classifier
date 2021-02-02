@@ -1,8 +1,11 @@
-from phi_utils import *
-from gamma_utils import *
+"""
+    Super class for the feature mapping functions
+"""
 
 from sklearn.metrics.pairwise import rbf_kernel
-
+from sklearn.utils.validation import check_is_fitted
+from sklearn.utils import check_X_y, check_array
+import numpy as np
 import itertools as it
 import scipy.special as scs
 import time
@@ -18,21 +21,21 @@ class Phi():
 
     Implementation for following types of feature functions are provided - 
 
-    1) Linear features - The features are the instances itself i.e.,
+    1) Linear kernel - The features are the instances itself i.e.,
         there is no mapping function except the one-hot encoding of the instances.
 
-    2) Thresholding features - The end features are defined as binary numbers
+    2) Thresholding kernel - The end features are defined as binary numbers
         which are obtained by comparing with the threshold values in each dimension.
         These threshold values are obtained from the training dataset.
         In this case, the number of features depend upon 
         the number of thresholds obtained
         and each of the threshold is defined for one of the dimensions.
 
-    3) Gaussian features - The features are defined using the gaussian kernel.
+    3) Gaussian kernel - The features are defined using the gaussian kernel.
         The gaussian kernel is defined as - 
                         K(x1,x2) = exp( -1 * gamma * |x1-x2|^2 )
 
-    4) Custom features - These feature functions are defined by the user. 
+    4) Custom kernel - These feature functions are defined by the user. 
         The user needs to define a function which takes instances as input 
         and returns the mapped features for those instances.
         This class then uses that function 
@@ -44,64 +47,38 @@ class Phi():
     n_classes : int
         The number of classes in the dataset
 
-    _type : {'gaussian', 'linear', 'threshold', 'custom'}
-        The type of feature mapping function to use for mapping the input data.
-        The 'gaussian', 'linear' and 'threshold' are predefined feature mapping.
-        If the type is 'custom', 
-        it means that the user has to define his own feature mapping function
+    Attributes
+    ----------
+    is_fitted_ : bool
+        True if the feature mappings has learned its hyperparameters (if any)
+        and the length of the feature mapping is set.
 
-    k : int, default=200
-        Optional parameter required in case 
-        when 'threshold' type of feature mapping is used.
-        It defines the maximum number of allowed threshold values for each dimension.
-
-    gamma : {'scale', 'avg_ann', 'avg_ann_50', float} default = 'avg_ann_50'
-        Optional parameter required in case 
-        when 'gaussian' type of feature mapping is used.
-        It defines the type of heuristic to be used 
-        to calculate the scaling parameter for the gaussian kernel.
+    Note:
+    -----
+    This is a base class for all the feature mappings.
+    To create a new feature mapping, 
+    it is expected to extend this class and 
+    then define the functions transform and 
+    fit if it is required to learn any hyper parameters for the feature mappings
 
     """
 
-    def __init__(self, n_classes, _type, k=200, gamma='avg_ann_50'):
+    def __init__(self, n_classes):
 
-        # number of classes
-        self.r= n_classes
+        self.n_classes= n_classes
 
-        # type of feature mapping. If None, then custom feature mapping is used.
-        self.type = _type
-
-        # maximum number of univariate thresholds for each dimension 
-        # hyperparameter for threshold features
-        self.k= k
-
-        # scale parameter for gaussian kernels
-        # hyperparameter for gaussian features
-        self.gamma = gamma
-
-    def fit(self, X, x=None, y=None, learn_config=True, learn_duplicates= False):
+    def fit(self, X, Y=None):
         """
-        Learn the set of features for the given type using the given instances.
+        Learn the hyperparameters 
+        required for the feature mapping function from the training instances.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_dimensions)
             Unlabeled training instances used to learn the feature configurations
 
-        x : array-like of shape (n_samples, n_dimensions), default = None
-            Instances used to compute the hyperparameters 
-            for different type of feature mappings if required.
-
-        y : array-like of shape (n_samples,)
-            Labels corresponding to the instances x,
-            used for computing the hyperparamters for the feature functions
-
-        learn_config : bool, default = True
-            Learn the configurations of phi if true
-
-        learn_duplicates : bool, default = False
-            Learn the configurations of phi with duplicate instances if exists
-            if the value is true
+        Y : array-like of shape (n_samples)
+            Labels corresponding to the unlabeled instances.
 
         Returns
         -------
@@ -110,61 +87,13 @@ class Phi():
 
         """
 
-        # Number of dimensions of the instances
-        d= X.shape[1]
-
-        # Store the instances to be used for computing the gaussian kernel
-        if self.type == 'gaussian':
-
-            if x is None:
-                x = X
-
-            # Save the instances 
-            # to be used at later stage to compute gaussian features
-            self.uniqX = np.unique(x, axis=0)
-
-            # Evaluate the gamma according to the gamma type given in self.gamma
-            if self.gamma == 'scale':
-                self.gamma_val = 1 / (d*x.var())
-
-            # elif self.gamma == 'avg_ann':
-                # self.gamma_val = heuristic_gamma(x, y)
-
-            elif self.gamma == 'avg_ann_50':
-                self.gamma_val = rff_gamma(x)
-
-            elif type(self.gamma) != str:
-                self.gamma_val = self.gamma
-
-            else:
-                raise ValueError('Unexpected value for gamma ...')
-
-        #Learn the product thresholds
-        elif self.type == 'threshold':
-
-            if x is None:
-                x = X
-
-            if y is None:
-                raise ValueError('Expected labels corresponding to the instances \
-                                    for finding the thresholds')
-
-            self.thrsDim, self.thrsVal = d_tree_split(x, y, self.k)
-
-        # Defining the length of the phi
-        self.m = self.transform(X).shape[1]+1
-        self.len = self.m*self.r
-
-        # Learn the configurations of phi using the training
-        if learn_config:
-            self.learnF(X, duplicate=learn_duplicates)
-
         self.is_fitted_ = True
         return self
 
-    def learnF(self, X, duplicate=False, save_config=True):
+    def learnConfig(self, X, duplicate=False):
         """
-        Stores all the unique configurations of x in X for every value of y.
+        Learn all the configurations of x in X for every value of y.
+        Duplicate configurations are obtained if the duplicate parameter is True.
 
         Parameters
         ----------
@@ -175,9 +104,6 @@ class Phi():
             Learn the configurations of phi with duplicate instances if exists
             if the value is true.
 
-        save_config : bool, default = True
-            Save the learned configurations with fitted feature function.
-
         Returns
         -------
         F : array-like of shape (n_samples, n_classes, 
@@ -186,20 +112,19 @@ class Phi():
 
         """
 
-        n= X.shape[0]
         phi= self.eval(X)
 
         # Used in the definition of the constraints/objective of the MRC
         # F is a tuple of floats with dimension n_intances X n_classes X m
         if duplicate:
+            # Used in case of CMRC
             F = phi
         else:
+            # Used in case of MRC
             # Disctinct configurations for phi_x,y for x in X and y=1,...,r.
-            F= np.vstack({tuple(phi_xy) for phi_xy in phi.reshape((n,self.r*self.len))})
-            F.shape = (F.shape[0], self.r, int(F.shape[1] / self.r))
-
-        if save_config:
-            self.F = F
+            n= X.shape[0]
+            F= np.vstack({tuple(phi_xy) for phi_xy in phi.reshape((n,self.n_classes*self.len))})
+            F.shape = (F.shape[0], self.n_classes, int(F.shape[1] / self.n_classes))
 
         return F
 
@@ -219,26 +144,7 @@ class Phi():
 
         """
 
-        # Customized features defined by the user when type is None and
-        # the matrix X is expected to contain the features instead of the instances
-        if self.type == 'linear':
-            X_feat = X
-
-        # Features defined according to the type chosen 
-        # from the list of features provided by this library as given at the top
-        elif self.type == 'threshold':
-            X_feat = thrs_features(X, self.thrsDim, self.thrsVal)  
-
-        elif self.type == 'gaussian':
-            X_feat = rbf_kernel(X, self.uniqX, gamma=self.gamma_val)
-
-        elif self.type == 'custom':
-            X_feat = self.customFeatures(X)
-
-        else:
-            raise ValueError('Unexpected value for the type of feature mapping to use ...')
-
-        return X_feat
+        return X
 
     def eval(self, X):
         """
@@ -263,24 +169,22 @@ class Phi():
         # Get the features
         X_feat = self.transform(X)
 
-        # Defining the length of the phi based on the features
-        m = X_feat.shape[1]+1
-        phi_len = m*self.r
+        X_feat = check_array(X_feat, accept_sparse=True)
 
         # product threshold values
         # [[p11,...,p1m],...,[p11,...,p1m],...,[pn1,...pnm],...,[pn1,...pnm]] 
         # where pij is the j-th prod theshold
         # for i-th unlabeled instance, r*n_samples X phi.len
-        phi = np.zeros((n, self.r, phi_len), dtype=np.float)
+        phi = np.zeros((n, self.n_classes, self.len), dtype=np.float)
 
         # adding the intercept
-        phi[:, np.arange(self.r), np.arange(self.r)*m] = \
-                np.tile(np.ones(n), (self.r, 1)).transpose()
+        phi[:, np.arange(self.n_classes), np.arange(self.n_classes)*self.m] = \
+                np.tile(np.ones(n), (self.n_classes, 1)).transpose()
 
         # Compute the phi function
-        for dimInd in range(1, m):
-            phi[:, np.arange(self.r), np.arange(self.r) * m + dimInd] = \
-                np.tile(X_feat[:, dimInd-1], (self.r, 1)).transpose()
+        for dimInd in range(1, self.m):
+            phi[:, np.arange(self.n_classes), np.arange(self.n_classes) * self.m + dimInd] = \
+                np.tile(X_feat[:, dimInd-1], (self.n_classes, 1)).transpose()
 
         return phi
 
@@ -312,22 +216,20 @@ class Phi():
         # Get the features
         X_feat = self.transform(X)
 
-        # Defining the length of the phi based on the features
-        m = X_feat.shape[1]+1
-        phi_len = m*self.r
+        X_feat = check_array(X_feat, accept_sparse=True)
 
         # product threshold values
         # [[p11,...,p1m],...,[p11,...,p1m],...,[pn1,...pnm],...,[pn1,...pnm]] 
         # where pij is the j-th prod theshold
         # for i-th unlabeled instance, r*n_samples X phi.len
-        phi = np.zeros((n, phi_len), dtype=np.float)
+        phi = np.zeros((n, self.len), dtype=np.float)
 
         # adding the intercept
-        phi[np.arange(n), Y * m] = np.ones(n)
+        phi[np.arange(n), Y * self.m] = np.ones(n)
 
         # Compute the phi function
-        for dimInd in range(1, m):
-            phi[np.arange(n), dimInd + Y * m] = X_feat[:, dimInd-1]
+        for dimInd in range(1, self.m):
+            phi[np.arange(n), dimInd + Y * self.m] = X_feat[:, dimInd-1]
 
         return phi
 
@@ -351,6 +253,7 @@ class Phi():
 
         """
 
+        X, Y = check_X_y(X, Y, accept_sparse= True)
         return np.average(self.evaluate(X, Y), axis= 0)
 
     def estStd(self, X, Y):
@@ -373,6 +276,7 @@ class Phi():
 
         """
 
+        X, Y = check_X_y(X, Y, accept_sparse= True)
         return np.std(self.evaluate(X, Y), axis= 0)
 
     def getAllSubsetConfig(self, F):
@@ -398,20 +302,14 @@ class Phi():
 
         # Summing up the phi configurations for all possible subsets of classes for each instance
         avgF= np.vstack((np.sum(F[:, S, ], axis=1)
-                            for numVals in range(1, self.r+1)
-                            for S in it.combinations(np.arange(self.r), numVals)))
+                            for numVals in range(1, self.n_classes+1)
+                            for S in it.combinations(np.arange(self.n_classes), numVals)))
 
         # Compute the corresponding length of the subset of classes for which sums computed for each instance
-        cardS= np.arange(1, self.r+1).repeat([n*scs.comb(self.r, numVals)
-                                        for numVals in np.arange(1, self.r+1)])[:, np.newaxis]
+        cardS= np.arange(1, self.n_classes+1).repeat([n*scs.comb(self.n_classes, numVals)
+                                        for numVals in np.arange(1, self.n_classes+1)])[:, np.newaxis]
 
         M= np.hstack((avgF, cardS))
 
         return M
 
-    def getLearnConfig(self):
-        """
-        Return the learned configurations in the training stage.
-        """
-
-        return self.F

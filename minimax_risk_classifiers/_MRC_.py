@@ -1,13 +1,13 @@
-'''
+"""
 	Super class for Minimax Risk Classifier
-'''
+"""
 
 import numpy as np
 import cvxpy as cvx
-import time
+from sklearn.utils import check_array
 
 # Import the feature mapping
-from phi import Phi
+from minimax_risk_classifiers.phi import *
 
 class _MRC_():
 
@@ -65,7 +65,7 @@ class _MRC_():
 	"""
 
 	def __init__(self, n_classes, equality=False, s=0.3, deterministic=False, 
-				seed=0, loss='0-1', solver='SCS', phi='linear', k=200, gamma='avg_ann_50'):
+				seed=0, loss='0-1', solver='SCS', phi='gaussian'):
 
 		self.r = n_classes
 		self.equality = equality
@@ -75,30 +75,21 @@ class _MRC_():
 		self.loss = loss
 		self.solver = solver
 
-		# Define the feature mapping
-		self.phi = Phi(r=self.r, _type=phi, k=k, gamma=gamma)
+		if phi == 'gaussian':
+			self.phi = PhiGaussian(n_classes = n_classes)
+		elif phi == 'linear':
+			self.phi = PhiLinear(n_classes = n_classes)
+		elif phi == 'threshold':
+			self.phi = PhiThreshold(n_classes = n_classes)
+		elif isinstance(phi, Phi):
+			self.phi = phi
+		else:
+			raise ValueError('Unexpected feature mapping type ... ')
 
 		# Solver list available in cvxpy
-		self.solvers = ['SCS', 'ECOS']
+		self.solvers = ['SCS', 'ECOS', 'ECOS_BB']
 
-	def setFeatures(self, phi_func):
-		"""
-		Save the user defined feature function 
-		for producing the custom feature mappings at later stage
-
-		Parameters
-		----------
-		phi_func : a function which takes an array-like input of shape (n_instances, n_features)
-			and gives an array-like output of shape (n_instances,)
-			It is the user defined function to compute the features from the instances
-
-		"""
-		if self.phi._type != 'custom':
-			self.phi = Phi(r=self.r, _type='custom', k=k, gamma=gamma)
-
-		self.phi.customFeatures = phi_func
-
-	def fit(self, X, Y_= None, X_= None, _tau= None, _lambda= None):
+	def fit(self, X, Y= None, X_= None, _tau= None, _lambda= None):
 		"""
 		Fit the MRC model.
 
@@ -145,6 +136,11 @@ class _MRC_():
 
 		"""
 
+		# Limit the number of training samples used in the optimization
+		# Reduces the training time
+		# n_max = 500
+
+		X = check_array(X, accept_sparse=True)
 		n = X.shape[0]
 
 		# Set the type of configuration to be learnt i.e.,
@@ -152,40 +148,45 @@ class _MRC_():
 		# based on the MRC/CMRC model
 		self.setLearnConfigType()
 
-		# Set the interval estimates (lambda and tau)
+		# Check if separate instances are given to estimate lambda and tau
+		# which will also be used to fit phi's hyperparameters.
 
 		# Check if the instances are given for computing the estimates
-		if X_ is not None and X_.shape[0] == Y_.shape[0]:
-			X_est = X_
-
-		elif X_ is not None and X_.shape[0] != Y_.shape[0]:
-			raise ValueError('Expected labels corresponding to the instances X_ \
-							for computing the estimates ... ')
+		if X_ is not None:
+			X_est = check_array(X_, accept_sparse=True)
 
 		else:
 			# Use the training samples used in optimization to compute the estimates
 			X_est = X
+
+		# # Learn the feature configurations to be used in optimization
+		# # for only limited number of instances 
+		# # to reduce training time for large datasets
+		# if n_max < n:
+		# 	# Fit and learn the feature mappings
+		# 	self.phi.fit(X[:n_max, :], X_est, Y_, learn_duplicates= self.learn_duplicates)
+
+		# else:
+		# Fit the feature mappings
+		self.phi.fit(X_est, Y)
 
 		# Set the interval estimates if they are given
 		# Otherwise compute the interval estimates
 		if _tau is not None:
 			self._tau = _tau
 		else:
-			self._tau= self.phi.estExp(X_est,Y_)
+			self._tau= self.phi.estExp(X_est,Y)
 
 		if _lambda is not None:
 			self._lambda = _lambda
 		else:
-			self._lambda = (self.s * self.phi.estStd(X_est,Y_))/np.sqrt(n)
+			self._lambda = (self.s * self.phi.estStd(X_est,Y))/np.sqrt(n)
 
 		self.a = self._tau - self._lambda
 		self.b = self._tau + self._lambda
 
-		# Fit and learn the feature mappings
-		self.phi.fit(X, X_est, Y_, learn_duplicates= self.learn_duplicates)
-
 		# Fit the MRC classifier
-		self._minimaxRisk(X,Y)
+		self._minimaxRisk(X)
 
 		return self
 
@@ -247,7 +248,6 @@ class _MRC_():
 			# try with a different solver for solution
 			for s in self.solvers:
 				if s != self.solver:
-
 					# Solve the problem
 					_ = prob.solve(solver=s, verbose=False)
 
@@ -260,6 +260,11 @@ class _MRC_():
 					# Break the loop once the solution is obtained
 					if mu_ is not None and zhi_ is not None and nu_ is not None:
 						break
+
+		# If no solution can be found for the optimization.
+		if mu_ is None or zhi_ is None:
+			raise ValueError('CVXpy solver couldn\'t find a solution .... \n \
+							  The problem is ', prob.status)
 
 		if nu is not None:
 			return mu_, zhi_, nu_
@@ -283,14 +288,15 @@ class _MRC_():
 
 		"""
 
+		X = check_array(X, accept_sparse=True)
 		if self.loss == 'log':
 			# In case of logistic loss function, 
 			# the classification is always deterministic
 
-			Phi = self.phi.eval(X)
+			phi = self.phi.eval(X)
 
 			# Deterministic classification
-			v = np.dot(Phi, self.mu)
+			v = np.dot(phi, self.mu)
 			ind = np.argmax(v, axis=1)
 
 		elif self.loss == '0-1':
